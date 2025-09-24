@@ -434,3 +434,178 @@
         )
     )
 )
+
+;; Deep-core mining (burns 50 STX for higher rewards)
+(define-public (deep-core-mine (rig-id uint))
+    (let (
+            (rig-data (unwrap! (map-get? mining-rigs rig-id) ERR-NOT-FOUND))
+            (player tx-sender)
+            (burn-amount DEEP-CORE-COST)
+        )
+        (asserts! (not (var-get game-paused)) ERR-UNAUTHORIZED)
+        (asserts! (is-eq (get owner rig-data) player) ERR-UNAUTHORIZED)
+        
+        ;; Burn STX for deep-core access
+        (unwrap! (stx-transfer? burn-amount player BURN-ADDRESS) ERR-INSUFFICIENT-FUNDS)
+        
+        ;; Enhanced randomization for deep-core mining
+        (let (
+                (random-value (mod (+ burn-block-height rig-id (var-get total-stx-burned)) u100))
+                (efficiency (get efficiency rig-data))
+            )
+            ;; Deep-core has much better odds (80% success rate)
+            (if (<= random-value u80)
+                ;; Success - create rare artifact directly
+                (let (
+                        (artifact-id (+ (var-get last-artifact-id) u1))
+                        (artifact-rarity (get-rare-rarity-from-random random-value))
+                        (artifact-power (+ u5 (mod random-value u15)))
+                        (resource-type (mod random-value u3))
+                    )
+                    (map-set artifacts artifact-id {
+                        owner: player,
+                        name: (get-artifact-name resource-type artifact-rarity),
+                        rarity: artifact-rarity,
+                        artifact-type: (get-artifact-type resource-type),
+                        power: artifact-power,
+                    })
+                    
+                    (var-set last-artifact-id artifact-id)
+                    (var-set total-stx-burned (+ (var-get total-stx-burned) burn-amount))
+                    (update-player-stats player burn-amount u0 u0 u1)
+                    
+                    (print {
+                        action: "deep-core-mine",
+                        player: player,
+                        rig-id: rig-id,
+                        artifact-id: artifact-id,
+                        burn-amount: burn-amount,
+                        rarity: artifact-rarity,
+                    })
+                    (ok artifact-id)
+                )
+                ;; Failure - still update stats
+                (begin
+                    (var-set total-stx-burned (+ (var-get total-stx-burned) burn-amount))
+                    (update-player-stats player burn-amount u0 u0 u0)
+                    (print {
+                        action: "deep-core-mine",
+                        player: player,
+                        rig-id: rig-id,
+                        result: "nothing",
+                        burn-amount: burn-amount,
+                    })
+                    (ok u0)
+                )
+            )
+        )
+    )
+)
+
+;; Enhanced rarity calculation for deep-core mining
+(define-private (get-rare-rarity-from-random (random uint))
+    (if (<= random u15)
+        "legendary"
+        (if (<= random u40)
+            "epic"
+            "rare"
+        )
+    )
+)
+
+;; Simple marketplace - list artifact for sale
+(define-map marketplace-listings uint {
+    seller: principal,
+    price: uint,
+    artifact-id: uint,
+    active: bool
+})
+
+(define-data-var last-listing-id uint u0)
+
+(define-public (list-artifact-for-sale (artifact-id uint) (price uint))
+    (let (
+            (artifact-data (unwrap! (map-get? artifacts artifact-id) ERR-NOT-FOUND))
+            (listing-id (+ (var-get last-listing-id) u1))
+            (seller tx-sender)
+        )
+        (asserts! (is-eq (get owner artifact-data) seller) ERR-UNAUTHORIZED)
+        (asserts! (> price u0) ERR-INVALID-AMOUNT)
+        (asserts! (not (var-get game-paused)) ERR-UNAUTHORIZED)
+        
+        (map-set marketplace-listings listing-id {
+            seller: seller,
+            price: price,
+            artifact-id: artifact-id,
+            active: true,
+        })
+        
+        (var-set last-listing-id listing-id)
+        (print {
+            action: "list-artifact",
+            seller: seller,
+            artifact-id: artifact-id,
+            listing-id: listing-id,
+            price: price,
+        })
+        (ok listing-id)
+    )
+)
+
+(define-public (buy-artifact (listing-id uint))
+    (let (
+            (listing (unwrap! (map-get? marketplace-listings listing-id) ERR-NOT-FOUND))
+            (buyer tx-sender)
+            (seller (get seller listing))
+            (price (get price listing))
+            (artifact-id (get artifact-id listing))
+        )
+        (asserts! (get active listing) ERR-UNAUTHORIZED)
+        (asserts! (not (is-eq buyer seller)) ERR-UNAUTHORIZED)
+        (asserts! (not (var-get game-paused)) ERR-UNAUTHORIZED)
+        
+        ;; Transfer STX from buyer to seller
+        (unwrap! (stx-transfer? price buyer seller) ERR-INSUFFICIENT-FUNDS)
+        
+        ;; Transfer artifact ownership
+        (map-set artifacts artifact-id 
+            (merge (unwrap-panic (map-get? artifacts artifact-id)) {owner: buyer}))
+        
+        ;; Deactivate listing
+        (map-set marketplace-listings listing-id 
+            (merge listing {active: false}))
+        
+        (print {
+            action: "buy-artifact",
+            buyer: buyer,
+            seller: seller,
+            artifact-id: artifact-id,
+            listing-id: listing-id,
+            price: price,
+        })
+        (ok true)
+    )
+)
+
+;; Leaderboard functions
+(define-read-only (get-top-burners (limit uint))
+    (ok "Leaderboard query - implement with indexing service")
+)
+
+(define-read-only (get-player-rank (player principal))
+    (let ((stats (map-get? player-stats player)))
+        (if (is-some stats)
+            (ok (get total-burned (unwrap-panic stats)))
+            ERR-NOT-FOUND
+        )
+    )
+)
+
+;; Marketplace read functions  
+(define-read-only (get-marketplace-listing (listing-id uint))
+    (map-get? marketplace-listings listing-id)
+)
+
+(define-read-only (get-active-listings)
+    (ok "Active listings - implement with indexing service")
+)
